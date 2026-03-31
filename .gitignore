@@ -1,6 +1,6 @@
 __pycache__/
 *.py[cod]
-.venv/
+myenv/
 models/
 *.h5
 *.pkl
