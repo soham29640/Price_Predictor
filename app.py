@@ -72,7 +72,7 @@ try:
     future_time = pd.date_range(
         start=df['Date'].iloc[-1] + pd.Timedelta(minutes=5),
         periods=horizon,
-        freq='5T'
+        freq='5min'
     )
 
     forecast = pd.Series(predictions, index=future_time)
