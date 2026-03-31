@@ -1,68 +1,75 @@
-import numpy as np
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.losses import MeanSquaredError
+from tensorflow.keras.layers import LSTM, Dense, Dropout,BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.regularizers import l2
 from sklearn.preprocessing import MinMaxScaler
+import numpy as np
 import joblib
 import os
-import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.data_loader import fetch_data
 
+WINDOW = 60
 
-def prepare_data(series, window_size=60):
+def prepare_data(series):
     X, y = [], []
-    for i in range(len(series) - window_size):
-        X.append(series[i:i + window_size])
-        y.append(series[i + window_size])
+    for i in range(len(series) - WINDOW):
+        X.append(series[i:i + WINDOW])
+        y.append(series[i + WINDOW])
     return np.array(X), np.array(y)
 
+print("📡 Fetching data...")
+df = fetch_data("AAPL", interval="5m", period="1mo")  # 🔥 MORE DATA
 
-# 🔥 Fetch stable data
-print("📡 Fetching training data...")
-df = fetch_data("AAPL", interval="5m", period="5d")
-
-# ✅ Safety checks
 if df is None or df.empty:
-    raise ValueError("No data fetched — check API")
+    raise ValueError("No data")
 
-if 'Close' not in df.columns:
-    raise ValueError("Missing 'Close' column in data")
-
-if len(df) < 100:
-    raise ValueError("Not enough data for training")
-
-# 🔄 Scaling
 scaler = MinMaxScaler()
-scaled_close = scaler.fit_transform(df['Close'].values.reshape(-1, 1))
+scaled = scaler.fit_transform(df['Close'].values.reshape(-1, 1))
 
-# 🧠 Prepare sequences
-X, y = prepare_data(scaled_close, window_size=60)
+X, y = prepare_data(scaled)
 X = X.reshape((X.shape[0], X.shape[1], 1))
 
-# 🤖 Model
+
 model = Sequential([
-    LSTM(64, return_sequences=False, input_shape=(X.shape[1], 1)),
+
+    # 🔹 First LSTM block
+    LSTM(128, return_sequences=True, input_shape=(WINDOW, 1)),
+    BatchNormalization(),
+    Dropout(0.3),
+
+    # 🔹 Second LSTM block
+    LSTM(64, return_sequences=True),
+    BatchNormalization(),
+    Dropout(0.3),
+
+    # 🔹 Third LSTM (captures deeper temporal patterns)
+    LSTM(32),
+    Dropout(0.2),
+
+    # 🔹 Dense layers (feature extraction)
+    Dense(64, activation='relu', kernel_regularizer=l2(0.001)),
     Dense(32, activation='relu'),
+
+    # 🔹 Output layer
     Dense(1)
 ])
 
-model.compile(optimizer='adam', loss=MeanSquaredError())
+model.compile(optimizer='adam', loss='mse')
 
-print("🚀 Training model...")
+early_stop = EarlyStopping(patience=3, restore_best_weights=True)
+
+print("🚀 Training...")
 model.fit(
     X, y,
-    epochs=10,
-    batch_size=64,
+    epochs=20,
+    batch_size=32,
     validation_split=0.1,
-    verbose=1
+    callbacks=[early_stop]
 )
 
-# 💾 Save
 os.makedirs("models", exist_ok=True)
-
 model.save("models/price_model.h5")
 joblib.dump(scaler, "models/scaler.pkl")
 
-print("✅ Model + scaler saved successfully")
+print("✅ Model saved")
