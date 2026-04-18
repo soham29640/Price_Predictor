@@ -1,11 +1,11 @@
 # 📊 VolatiX: Real-Time Stock Price Predictor
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://www.python.org/)
-[![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15-orange?logo=tensorflow)](https://www.tensorflow.org/)
+[![TensorFlow](https://img.shields.io/badge/TensorFlow-2.16-orange?logo=tensorflow)](https://www.tensorflow.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35-red?logo=streamlit)](https://streamlit.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-**VolatiX** is a production-ready, real-time stock price prediction dashboard powered by a multi-layer **LSTM deep learning model**. It ingests live OHLCV market data, runs iterative multi-step forecasting, and renders fully interactive Plotly charts — all inside a Streamlit web application that refreshes automatically every 3 minutes.
+**VolatiX** is a production-ready stock price prediction dashboard powered by a multi-layer **LSTM deep learning model**. It reads OHLCV market data from local CSV files (kept fresh by a scheduler), runs iterative multi-step forecasting, and renders fully interactive Plotly charts — all inside a Streamlit web application that refreshes automatically every 5 minutes.
 
 ---
 
@@ -15,13 +15,11 @@
 2. [Project Structure](#-project-structure)
 3. [Data Flow Diagram](#-data-flow-diagram)
 4. [ML Pipeline — Step by Step](#-ml-pipeline--step-by-step)
-5. [File Execution Walkthrough](#-file-execution-walkthrough)
-6. [Model Architecture](#-model-architecture)
-7. [Setup & Installation](#-setup--installation)
-8. [Usage](#-usage)
-9. [Dependencies](#-dependencies)
-10. [Security Notes](#-security-notes)
-11. [License](#-license)
+5. [Model Architecture](#-model-architecture)
+6. [Setup & Installation](#-setup--installation)
+7. [Usage](#-usage)
+8. [Dependencies](#-dependencies)
+9. [License](#-license)
 
 ---
 
@@ -29,12 +27,12 @@
 
 | Feature | Detail |
 |---|---|
-| 📡 **Live market data** | Fetches real-time OHLCV data via Yahoo Finance (Alpha Vantage fallback → synthetic fallback) |
+| 📡 **Local CSV data** | Reads OHLCV data from `data/raw/{ticker}.csv`; refreshed hourly by the scheduler |
 | 🤖 **LSTM-based forecasting** | Deep learning model trained on 5-minute interval close prices |
 | 📈 **Interactive charts** | Candlestick chart + multi-step price forecast overlay via Plotly |
-| ⏱️ **Auto-refresh** | Dashboard refreshes every 3 minutes; data is cached for the same window |
+| ⏱️ **Auto-refresh** | Dashboard refreshes every 5 minutes; data is cached for 60 seconds |
 | 🔧 **Configurable** | Ticker symbol and prediction horizon are adjustable via the sidebar |
-| 🔄 **Scheduled retraining** | Background process retrains the model from scratch every hour |
+| 🔄 **Scheduled updates** | Background scheduler updates CSV data every hour and retrains the model every 24 hours |
 
 ---
 
@@ -43,21 +41,23 @@
 ```
 Price_Predictor/
 ├── app.py                                    # Streamlit dashboard — main entry point
+├── auto_trainer.py                           # Scheduler: data update (hourly) + retraining (daily)
 ├── requirements.txt                          # Python dependencies
-├── .env                                      # API keys (git-ignored — see setup)
 ├── .gitignore
 ├── LICENSE
 │
 ├── notebooks/
 │   └── Untitled.ipynb                        # Exploratory / experimental notebook
 │
+├── data/
+│   └── raw/                                  # CSV data files (git-ignored)
+│       └── {TICKER}.csv                      # e.g. AAPL.csv
+│
 ├── src/
-│   ├── train/
-│   │   ├── train_price_model.py              # One-shot LSTM training script
-│   │   └── auto_trainer.py                   # Periodic retraining loop (every hour)
-│   └── utils/
-│       ├── data_loader.py                    # Data fetching with fallback chain
-│       └── load_and_predict_price_model.py   # Load saved model & generate predictions
+│   ├── data_loader.py                        # OHLCV data fetching via yfinance
+│   ├── update_data.py                        # Fetches latest data and saves to CSV
+│   ├── train_price_model.py                  # One-shot LSTM training script
+│   └── load_and_predict_price_model.py       # Load saved model & generate predictions
 │
 └── models/                                   # Saved artifacts (git-ignored)
     ├── price_model.h5                        # Trained Keras LSTM model
@@ -72,19 +72,30 @@ The diagram below traces every data transformation from raw market feed to rende
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        TRAINING PIPELINE (offline)                          │
+│                      DATA UPDATE PIPELINE (src/update_data.py)              │
+│                                                                             │
+│  update_data.py                                                             │
+│       │                                                                     │
+│       ▼                                                                     │
+│  data_loader.fetch_data("AAPL", interval="5m", period="5d")                │
+│       │  Yahoo Finance ──► success? ──Yes──► OHLCV DataFrame               │
+│       │         No ▼                                                        │
+│       │  Retry (up to 2 attempts, 60 s delay on rate limit)                │
+│       │                                                                     │
+│       ▼                                                                     │
+│  data/raw/AAPL.csv  ◄── saved to disk                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        TRAINING PIPELINE (src/train_price_model.py)         │
 │                                                                             │
 │  train_price_model.py                                                       │
 │       │                                                                     │
 │       ▼                                                                     │
 │  data_loader.fetch_data("AAPL", interval="5m", period="1mo")               │
-│       │  Yahoo Finance ──► success?  ──Yes──► OHLCV DataFrame              │
-│       │         No ▼                                                        │
-│       │  Alpha Vantage ──► success?  ──Yes──► OHLCV DataFrame              │
-│       │         No ▼                                                        │
-│       │  Synthetic fallback ──────────────► OHLCV DataFrame                │
-│       │                                          │                          │
-│       ▼                                          ▼                          │
+│       │  Yahoo Finance ──► OHLCV DataFrame                                 │
+│       │                          │                                          │
+│       ▼                          ▼                                          │
 │  MinMaxScaler.fit_transform(Close prices)                                   │
 │       │                                                                     │
 │       ▼                                                                     │
@@ -103,15 +114,11 @@ The diagram below traces every data transformation from raw market feed to rende
 │  Browser (localhost:8501)                                                   │
 │       │  User enters ticker + prediction horizon                            │
 │       ▼                                                                     │
-│  app.py  ──► st_autorefresh (every 3 min)                                  │
+│  app.py  ──► st_autorefresh (every 5 min)                                  │
 │       │                                                                     │
 │       ▼                                                                     │
-│  data_loader.fetch_data(ticker, interval="5m", period="5d")                │
-│       │  Yahoo Finance ──► success?  ──Yes──► OHLCV DataFrame              │
-│       │         No ▼                                                        │
-│       │  Alpha Vantage ──► success?  ──Yes──► OHLCV DataFrame              │
-│       │         No ▼                                                        │
-│       │  Synthetic fallback ──────────────► OHLCV DataFrame                │
+│  load_data(ticker)                                                          │
+│       │  Read data/raw/{ticker}.csv ──► OHLCV DataFrame (cached 60 s)      │
 │       │                                          │                          │
 │       ▼                                          │                          │
 │  Candlestick chart (Plotly)  ◄───────────────────┘                         │
@@ -134,14 +141,18 @@ The diagram below traces every data transformation from raw market feed to rende
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    CONTINUOUS RETRAINING (background)                       │
+│                    SCHEDULER (auto_trainer.py)                              │
 │                                                                             │
 │  auto_trainer.py                                                            │
 │       │                                                                     │
-│       └── loop every 3600 s:                                                │
-│               subprocess.run(train_price_model.py)                         │
-│               ──► overwrites models/price_model.h5 + scaler.pkl            │
-│               ──► app.py picks up new model on next request                │
+│       └── loop every 60 s:                                                  │
+│               if ≥ 1 hour since last update:                               │
+│                   subprocess.run(src/update_data.py)                       │
+│                   ──► refreshes data/raw/{ticker}.csv                      │
+│               if ≥ 24 hours since last train:                              │
+│                   subprocess.run(src/train_price_model.py)                 │
+│                   ──► overwrites models/price_model.h5 + scaler.pkl        │
+│               ──► app.py picks up new data/model on next request           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -149,23 +160,28 @@ The diagram below traces every data transformation from raw market feed to rende
 
 ## 🧩 ML Pipeline — Step by Step
 
-### Phase 1 — Data Ingestion (`src/utils/data_loader.py`)
+### Phase 1 — Data Fetching (`src/data_loader.py`)
 
-`fetch_data(ticker, interval, period)` implements a **three-tier fallback chain** to guarantee data availability:
+`fetch_data(ticker, interval, period)` fetches OHLCV data from **Yahoo Finance** via `yfinance`:
 
-| Priority | Source | Condition |
-|---|---|---|
-| 1 | Yahoo Finance (`yfinance`) | Primary — real-time 5-minute OHLCV bars |
-| 2 | Alpha Vantage REST API | Secondary — daily OHLCV if Yahoo fails |
-| 3 | Synthetic DataFrame | Hard fallback — sequential prices; ensures app never crashes |
-
-The function always returns a normalised DataFrame with columns: `Date`, `Open`, `High`, `Low`, `Close`, `Volume`.
+| Behaviour | Detail |
+|---|---|
+| Source | Yahoo Finance (`yfinance`) — 5-minute OHLCV bars |
+| Rate limit handling | Retries up to 2 times with a 60-second delay |
+| Column normalisation | Renames `Datetime` → `Date`, falls back to `Adj Close` if `Close` is missing |
+| Output | Clean DataFrame with columns: `Date`, `Open`, `High`, `Low`, `Close`, `Volume` |
 
 ---
 
-### Phase 2 — Model Training (`src/train/train_price_model.py`)
+### Phase 2 — Data Update (`src/update_data.py`)
 
-Executed **once manually** before first use, then **automatically every hour** via `auto_trainer.py`.
+Fetches the latest 5 days of 5-minute data for the configured ticker and writes it to `data/raw/{ticker}.csv`. Run manually before first use or let `auto_trainer.py` handle it hourly.
+
+---
+
+### Phase 3 — Model Training (`src/train_price_model.py`)
+
+Executed **once manually** before first use, then **automatically every 24 hours** via `auto_trainer.py`.
 
 ```
 Step 1  fetch_data("AAPL", interval="5m", period="1mo")
@@ -197,7 +213,7 @@ Step 6  Save artifacts
 
 ---
 
-### Phase 3 — Live Inference (`src/utils/load_and_predict_price_model.py`)
+### Phase 4 — Live Inference (`src/load_and_predict_price_model.py`)
 
 Called by `app.py` on every dashboard render cycle.
 
@@ -205,7 +221,7 @@ Called by `app.py` on every dashboard render cycle.
 Step 1  Load models/price_model.h5  (compile=False for speed)
         Load models/scaler.pkl
 
-Step 2  Extract last 60 Close prices from live DataFrame
+Step 2  Extract last 60 Close prices from DataFrame
         scaler.transform(prices)  →  scaled input (60, 1)
 
 Step 3  Reshape to (1, 60, 1)  — batch of 1 sequence
@@ -223,11 +239,11 @@ Step 6  Return predicted prices to app.py
 
 ---
 
-### Phase 4 — Dashboard Rendering (`app.py`)
+### Phase 5 — Dashboard Rendering (`app.py`)
 
 ```
-Step 1  st_autorefresh(interval=180_000 ms)      # trigger every 3 minutes
-Step 2  load_data(ticker)                        # calls fetch_data, cached 180 s
+Step 1  st_autorefresh(interval=300_000 ms)      # trigger every 5 minutes
+Step 2  load_data(ticker)                        # reads CSV, cached 60 s
 Step 3  Validate DataFrame (columns, length ≥ 60)
 Step 4  Build Candlestick chart from OHLCV data
 Step 5  predict_next_prices(df, window=60, horizon)
@@ -239,16 +255,22 @@ Step 9  Render metric tiles + both Plotly charts to browser
 
 ---
 
-### Phase 5 — Continuous Retraining (`src/train/auto_trainer.py`)
+### Phase 6 — Scheduler (`auto_trainer.py`)
 
 ```
 while True:
-    subprocess.run(["python", "src/train/train_price_model.py"])
-    # ↑ full train cycle: fetch → scale → train → save
-    time.sleep(3600)   # wait 1 hour, then repeat
+    if time_since_last_update >= 3600:
+        subprocess.run(["python", "src/update_data.py"])
+        # ↑ fetches latest CSV data from Yahoo Finance
+
+    if time_since_last_train >= 86400:
+        subprocess.run(["python", "src/train_price_model.py"])
+        # ↑ full train cycle: fetch → scale → train → save
+
+    time.sleep(60)   # check every minute
 ```
 
-The model artifacts are **overwritten in place**. The dashboard loads the model fresh on each request cycle, so the updated model is picked up automatically without restarting the app.
+The model artifacts and CSV data are **overwritten in place**. The dashboard picks up updates automatically on the next request cycle.
 
 ---
 
@@ -306,37 +328,37 @@ source myenv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configure environment variables
-
-Create a `.env` file in the project root (git-ignored):
-
-```env
-ALPHA_API_KEY=your_alpha_vantage_api_key_here
-```
-
-> **Note:** An Alpha Vantage key is only used as a fallback when Yahoo Finance is unavailable. A free key is available at [alphavantage.co](https://www.alphavantage.co/support/#api-key).
-
 ---
 
 ## 🚀 Usage
 
-### Step 1 — Train the initial model
+### Step 1 — Fetch initial data
 
 ```bash
-python src/train/train_price_model.py
+python src/update_data.py
+```
+
+Downloads the latest 5 days of 5-minute AAPL OHLCV data from Yahoo Finance and saves it to `data/raw/AAPL.csv`.
+
+### Step 2 — Train the initial model
+
+```bash
+python src/train_price_model.py
 ```
 
 Fetches 1 month of 5-minute AAPL data, trains the LSTM, and saves `models/price_model.h5` and `models/scaler.pkl`.
 
-### Step 2 — (Optional) Start continuous retraining
+### Step 3 — (Optional) Start the scheduler
 
-Run in a separate terminal to retrain the model every hour in the background:
+Run in a separate terminal to keep data and the model up-to-date automatically:
 
 ```bash
-python src/train/auto_trainer.py
+python auto_trainer.py
 ```
 
-### Step 3 — Launch the dashboard
+This updates `data/raw/{ticker}.csv` every hour and retrains the model every 24 hours.
+
+### Step 4 — Launch the dashboard
 
 ```bash
 streamlit run app.py
@@ -346,7 +368,9 @@ Open **`http://localhost:8501`** in your browser.
 
 - Enter any valid stock ticker (`AAPL`, `TSLA`, `MSFT`, etc.) in the sidebar.
 - Adjust the **Prediction Horizon** slider to set how many 5-minute steps ahead to forecast.
-- The dashboard auto-refreshes every **3 minutes**.
+- The dashboard auto-refreshes every **5 minutes**.
+
+> **Note:** The app reads data from `data/raw/{ticker}.csv`. If the file does not exist for the ticker you enter, run `python src/update_data.py` (edit the `TICKER` variable as needed) or let the scheduler create it.
 
 ---
 
@@ -355,24 +379,14 @@ Open **`http://localhost:8501`** in your browser.
 | Package | Version | Role |
 |---|---|---|
 | `streamlit` | 1.35.0 | Web dashboard framework |
-| `tensorflow` | 2.15.0 | LSTM model training & inference |
-| `yfinance` | 0.2.38 | Yahoo Finance data fetching |
+| `tensorflow-cpu` | 2.16.1 | LSTM model training & inference |
+| `yfinance` | 0.2.54 | Yahoo Finance data fetching |
 | `plotly` | 5.22.0 | Interactive candlestick & forecast charts |
 | `pandas` | 2.2.2 | DataFrame manipulation |
 | `numpy` | 1.26.4 | Numerical operations & array shaping |
 | `scikit-learn` | 1.4.2 | MinMaxScaler for data normalisation |
 | `joblib` | 1.4.2 | Scaler serialisation / deserialisation |
-| `arch` | 6.3.0 | Volatility modelling utilities |
 | `streamlit-autorefresh` | 1.0.1 | Timed dashboard refresh |
-| `dotenv` | latest | `.env` file loading |
-
----
-
-## 🔒 Security Notes
-
-- Never commit your `.env` file — it is listed in `.gitignore`.
-- Never commit the `models/` directory — model artifacts are also git-ignored.
-- Keep your Alpha Vantage API key private and rotate it if exposed.
 
 ---
 
