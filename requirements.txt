@@ -1,11 +1,16 @@
-streamlit==1.35.0
-tensorflow==2.15.0
-yfinance==0.2.38
-plotly==5.22.0
-pandas==2.2.2
+# ── Data fetching ──────────────────────────────────────────────────────────────
+yfinance==0.2.54
+
+# ── Data processing ────────────────────────────────────────────────────────────
 numpy==1.26.4
+pandas==2.2.2
 scikit-learn==1.4.2
+
+# ── Deep learning ──────────────────────────────────────────────────────────────
+tensorflow-cpu==2.16.1
 joblib==1.4.2
-arch==6.3.0
+
+# ── Dashboard ──────────────────────────────────────────────────────────────────
+streamlit==1.35.0
+plotly==5.22.0
 streamlit-autorefresh==1.0.1
-dotenv

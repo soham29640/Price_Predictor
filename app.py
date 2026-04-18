@@ -1,126 +1,139 @@
-import numpy as np
+import os
+import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
-from src.utils.data_loader import fetch_data
-from src.utils.load_and_predict_price_model import predict_next_prices
+from src.load_and_predict_price_model import predict_next_prices
 
-# ---------------- CONFIG ----------------
+# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="VolatiX Dashboard", layout="wide")
-st.title("📊 VolatiX: Real-Time Price Prediction")
+st.title("📊 VolatiX: Price Prediction Dashboard")
+st.caption("Data source: Local CSV (updated hourly)")
 
-# 🔥 reduce API pressure
-st_autorefresh(interval=180000, key="auto_refresh")  # 3 min
+# Auto-refresh every 5 minutes
+st_autorefresh(interval=300_000, key="auto_refresh")
 
-ticker = st.sidebar.text_input("Enter Stock Ticker", value="AAPL")
-window_size = 60
-horizon = st.sidebar.slider("Prediction Horizon (steps)", 5, 30, 10)
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.header("Settings")
+ticker  = st.sidebar.text_input("Stock Ticker", value="AAPL").upper().strip()
+horizon = st.sidebar.slider("Prediction Horizon (bars)", 5, 30, 10)
+st.sidebar.caption("Each bar = 5 minutes")
 
-# ---------------- CACHE ----------------
-@st.cache_data(ttl=180)
-def load_data(ticker):
-    return fetch_data(ticker, interval="5m", period="5d")
+WINDOW = 60
 
 
-# ---------------- MAIN ----------------
+# ── Load data from CSV (NO API) ────────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def load_data(ticker: str):
+    path = f"data/raw/{ticker}.csv"
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{path} not found. Run update_data.py first.")
+
+    df = pd.read_csv(path)
+    df["Date"] = pd.to_datetime(df["Date"])
+
+    return df
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 try:
-    with st.spinner("Fetching market data..."):
+    with st.spinner("Loading data from local CSV..."):
         df = load_data(ticker)
 
-    # 🔥 safety checks
-    if df is None or df.empty:
+    # Basic validation
+    if df.empty:
         st.error("No data available.")
         st.stop()
 
     required_cols = ["Date", "Open", "High", "Low", "Close"]
-    if not all(col in df.columns for col in required_cols):
-        st.error("Invalid data format from API.")
+    missing = [c for c in required_cols if c not in df.columns]
+
+    if missing:
+        st.error(f"Missing columns: {missing}")
         st.stop()
 
-    if len(df) < window_size:
-        st.error("Not enough data for prediction.")
+    if len(df) < WINDOW:
+        st.error(f"Need at least {WINDOW} rows, got {len(df)}.")
         st.stop()
 
-    # ---------------- CANDLE CHART ----------------
-    fig = go.Figure(data=[
-        go.Candlestick(
-            x=df['Date'],
-            open=df['Open'],
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close'],
-            name='Market Data'
-        )
-    ])
+    # Use recent data only (faster + better)
+    df = df.tail(500)
 
-    fig.update_layout(
-        title=f"📊 {ticker} Price Chart",
-        xaxis_rangeslider_visible=False
-    )
+    # ── Metrics ────────────────────────────────────────────────────────────────
+    current_price = float(df["Close"].iloc[-1])
 
-    # ---------------- PREDICTION ----------------
-    with st.spinner("Running AI model..."):
+    with st.spinner("Running prediction model..."):
         predictions = predict_next_prices(
             df,
-            window_size=window_size,
+            window_size=WINDOW,
             horizon=horizon
         )
 
-    # 🔥 time alignment (5 min interval)
-    future_time = pd.date_range(
-        start=df['Date'].iloc[-1] + pd.Timedelta(minutes=5),
-        periods=horizon,
-        freq='5min'
-    )
+    next_price = float(predictions[0])
+    change_pct = (next_price - current_price) / current_price * 100
 
-    forecast = pd.Series(predictions, index=future_time)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Current Price", f"${current_price:.2f}")
+    col2.metric("Next Predicted Price", f"${next_price:.2f}", f"{change_pct:+.2f}%")
+    col3.metric("Bars Ahead", f"{horizon} ({horizon * 5} min)")
 
-    # ---------------- COMBINED CHART ----------------
-    price_fig = go.Figure()
-
-    # last 100 real points
-    price_fig.add_trace(go.Scatter(
-        x=df['Date'].tail(100),
-        y=df['Close'].tail(100),
-        mode='lines',
-        name='Actual Price'
+    # ── Candlestick chart ──────────────────────────────────────────────────────
+    candle_fig = go.Figure(go.Candlestick(
+        x=df["Date"],
+        open=df["Open"],
+        high=df["High"],
+        low=df["Low"],
+        close=df["Close"]
     ))
 
-    # predicted
-    price_fig.add_trace(go.Scatter(
+    candle_fig.update_layout(
+        title=f"{ticker} — Recent Candlestick Data",
+        xaxis_rangeslider_visible=False
+    )
+
+    # ── Forecast chart ─────────────────────────────────────────────────────────
+    future_times = pd.date_range(
+        start=df["Date"].iloc[-1] + pd.Timedelta(minutes=5),
+        periods=horizon,
+        freq="5min"
+    )
+
+    forecast = pd.Series(predictions, index=future_times)
+
+    forecast_fig = go.Figure()
+    forecast_fig.add_trace(go.Scatter(
+        x=df["Date"].tail(100),
+        y=df["Close"].tail(100),
+        mode="lines",
+        name="Actual"
+    ))
+
+    forecast_fig.add_trace(go.Scatter(
         x=forecast.index,
         y=forecast.values,
-        mode='lines+markers',
-        name='Predicted Price'
+        mode="lines+markers",
+        name="Predicted",
+        line=dict(dash="dot")
     ))
 
-    price_fig.update_layout(
-        title=f"📈 Price Forecast ({horizon*5} min ahead)",
-        hovermode='x unified'
+    forecast_fig.update_layout(
+        title=f"{ticker} — Forecast ({horizon * 5} min ahead)",
+        hovermode="x unified"
     )
 
-    # ---------------- METRICS ----------------
-    current_price = df['Close'].iloc[-1]
-    next_price = forecast.iloc[0]
+    # ── Render ─────────────────────────────────────────────────────────────────
+    st.plotly_chart(candle_fig, use_container_width=True)
+    st.plotly_chart(forecast_fig, use_container_width=True)
 
-    change = next_price - current_price
-    percent = (change / current_price) * 100
+    with st.expander("📋 View raw data"):
+        st.dataframe(df.tail(50), use_container_width=True)
 
-    col1, col2 = st.columns(2)
+# ── Error handling ─────────────────────────────────────────────────────────────
+except FileNotFoundError as e:
+    st.warning(str(e))
+    st.info("Run: python update_data.py")
 
-    col1.metric("Current Price", f"{current_price:.2f}")
-    col2.metric(
-        "Next Predicted Price",
-        f"{next_price:.2f}",
-        f"{percent:.2f}%"
-    )
-
-    # ---------------- DISPLAY ----------------
-    st.plotly_chart(fig, use_container_width=True)
-    st.plotly_chart(price_fig, use_container_width=True)
-
-# ---------------- ERROR ----------------
 except Exception as e:
-    st.error(f"❌ Error: {e}")
+    st.error(f"❌ {e}")
